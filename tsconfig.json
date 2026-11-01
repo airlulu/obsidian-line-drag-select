@@ -1,14 +1,15 @@
 {
   "compilerOptions": {
-    "module": "ESNext",
     "target": "ES2020",
-    "moduleResolution": "bundler",
-    "allowJs": true,
-    "noImplicitAny": true,
-    "strictNullChecks": true,
-    "isolatedModules": true,
+    "module": "CommonJS",
+    "moduleResolution": "node",
     "lib": ["DOM", "ES2020", "ES2022"],
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["main.js"]
 }
