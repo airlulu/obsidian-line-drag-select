@@ -1,0 +1,15 @@
+/* 自绘模式下隐藏 Obsidian 原生行号列，避免出现两列数字 */
+body.lds-own-gutter .cm-gutters .cm-gutter.cm-lineNumbers:not(.cm-lds-own) {
+  display: none;
+}
+
+/* 拖拽经过的行块，在 gutter 上给出 VS Code 那样的反馈 */
+.cm-gutters .cm-gutterElement.cm-lds-selected {
+  background-color: var(--text-selection, rgba(120, 120, 120, 0.18));
+}
+
+/* 行号区保持箭头光标，不变成文本 I 型 */
+.cm-lineNumbers .cm-gutterElement {
+  cursor: default;
+  user-select: none;
+}

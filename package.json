@@ -1,0 +1,22 @@
+{
+  "name": "obsidian-line-drag-select",
+  "version": "0.1.0",
+  "description": "Drag across the line-number gutter to select whole lines, like VS Code.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit --skipLibCheck"
+  },
+  "keywords": ["obsidian", "obsidian-plugin", "codemirror6", "gutter"],
+  "license": "MIT",
+  "devDependencies": {
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.43.0",
+    "@types/node": "^20.14.0",
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.24.0",
+    "obsidian": "latest",
+    "typescript": "^5.6.0"
+  }
+}
