@@ -15,8 +15,9 @@
  *   1. 配置项与默认值
  *   2. 纯逻辑：行块 -> 选区（不碰 DOM，可单测）
  *   3. 坐标 -> 行块（三档降级）
- *   4. 拖拽高亮（StateField + gutterLineClass）
+ *   4. 行号栏高亮（选区来源标记 + gutterLineClass 逐行 point marker）
  *   5. 拖拽状态机（全局单例）
+ *   5-B. 整行选区的键盘命令（Shift 按行扩展 / 删除·剪切补偿）
  *   6-A / 6-B. 两种事件源：复用原生行号 / 自绘行号列
  *   7. 对外出口：CM6 扩展工厂
  *   8. Plugin 装配
@@ -29,15 +30,15 @@
 
 const { Plugin, PluginSettingTab, Setting, MarkdownView, Notice } = require("obsidian");
 const {
+  Annotation,
   Compartment,
   EditorSelection,
   EditorState,
   Prec,
   RangeSet,
-  StateEffect,
   StateField,
 } = require("@codemirror/state");
-const { GutterMarker, ViewPlugin, gutter, gutterLineClass } = require("@codemirror/view");
+const { GutterMarker, ViewPlugin, gutter, gutterLineClass, keymap } = require("@codemirror/view");
 
 /* ------------------------------------------------------------------ *
  * 1. 配置项与默认值
@@ -55,7 +56,9 @@ const { GutterMarker, ViewPlugin, gutter, gutterLineClass } = require("@codemirr
 /** @type {Settings} */
 const DEFAULT_SETTINGS = {
   gutterMode: "hook",
-  includeEOL: true,
+  // 默认严格行尾：拖动/单击/Shift 的整行选区都停在末尾行行末（见 docs 设计文档）；
+  // 打开后只影响单击 / Shift：整行选区吞掉行尾换行符，便于一键删整行。
+  includeEOL: false,
   autoScroll: true,
 };
 
@@ -80,6 +83,7 @@ const DEFAULT_SETTINGS = {
 
 /**
  * 行块末端（可选含换行符）。文档最后一行没有换行符可吞。
+ * 打开 includeEOL 时只用于“单击 / Shift”的整行选区（拖动永远走 selectionEnd）。
  *
  * @param {import("@codemirror/state").EditorState} state
  * @param {LineBlock} block
@@ -91,7 +95,24 @@ function blockEnd(state, block, opts) {
 }
 
 /**
+ * 严格行尾：整行选区的终点落在末尾行行末，不吞换行符 —— 这样 head / 光标 /
+ * 选区下界都严格停在“鼠标拖到的那一行”，不会越到下一行行头。
+ *
+ * 空行例外：空行的 from == to，严格行尾会得到零宽选区（看起来没选中，
+ * 且 Backspace 会删掉上一行的换行、把两行并成一行），所以空行吞掉自己的换行符。
+ *
+ * @param {import("@codemirror/state").EditorState} state
+ * @param {LineBlock} block
+ * @returns {number}
+ */
+function selectionEnd(state, block) {
+  if (block.from === block.to) return block.to < state.doc.length ? block.to + 1 : block.to;
+  return block.to;
+}
+
+/**
  * 单击行号：选中整行。
+ * includeEOL 打开时吞掉行尾换行符（保留“点一行后一键删整行”的能力），否则严格行尾。
  *
  * @param {import("@codemirror/state").EditorState} state
  * @param {LineBlock} block
@@ -99,31 +120,34 @@ function blockEnd(state, block, opts) {
  * @returns {import("@codemirror/state").SelectionRange}
  */
 function rangeForLine(state, block, opts) {
-  return EditorSelection.range(block.from, blockEnd(state, block, opts));
+  return EditorSelection.range(
+    block.from,
+    opts.includeEOL ? blockEnd(state, block, opts) : selectionEnd(state, block)
+  );
 }
 
 /**
- * 拖拽：以按下时那一行（anchor）为锚，逐行扩展。
- * 向下拖 -> anchor 在起始行行首，head 在末行行尾；
- * 向上拖 -> anchor 在起始行行尾，head 在末行行首。
- * 这样 anchor/head 方向与 VS Code 一致，Shift+方向键还能继续微调。
+ * 拖拽：以按下时那一行（anchor）为锚，逐行扩展。终点永远严格行尾（与 includeEOL 无关）。
+ * 向下拖 -> anchor 在起始行行首，head 在末行行末；
+ * 向上拖 -> anchor 在起始行行末，head 在末行行首。
+ * 这样 anchor/head 方向与 VS Code 一致，配合 5-B 的 Shift 按行扩展还能继续整行微调。
  *
  * @param {import("@codemirror/state").EditorState} state
  * @param {LineBlock} anchor
  * @param {LineBlock} current
- * @param {LineSelectOptions} opts
+ * @param {LineSelectOptions} _opts - 仅为保持调用签名一致：拖动不再受 includeEOL 影响
  * @returns {import("@codemirror/state").SelectionRange}
  */
-function rangeForDrag(state, anchor, current, opts) {
+function rangeForDrag(state, anchor, current, _opts) {
   if (current.from >= anchor.from) {
-    return EditorSelection.range(anchor.from, blockEnd(state, current, opts));
+    return EditorSelection.range(anchor.from, selectionEnd(state, current));
   }
-  return EditorSelection.range(blockEnd(state, anchor, opts), current.from);
+  return EditorSelection.range(selectionEnd(state, anchor), current.from);
 }
 
 /**
  * Shift + 点击：锚点固定为既有 selection 的 anchor，目标行整行对齐后延伸。
- * 目标行在锚点之后 -> 吃到行尾；在锚点之前 -> 只到行首。
+ * 目标行在锚点之后 -> 吃到行末（includeEOL 打开时吞换行）；在锚点之前 -> 只到行首。
  *
  * @param {import("@codemirror/state").EditorState} state
  * @param {number} anchorPos
@@ -133,7 +157,10 @@ function rangeForDrag(state, anchor, current, opts) {
  */
 function rangeForShift(state, anchorPos, block, opts) {
   if (anchorPos <= block.from) {
-    return EditorSelection.range(anchorPos, blockEnd(state, block, opts));
+    return EditorSelection.range(
+      anchorPos,
+      opts.includeEOL ? blockEnd(state, block, opts) : selectionEnd(state, block)
+    );
   }
   return EditorSelection.range(anchorPos, block.from);
 }
@@ -182,6 +209,106 @@ function sameBlock(a, b) {
   return a.from === b.from && a.to === b.to;
 }
 
+/**
+ * 选区覆盖的行号区间（1 基、闭区间）。末尾行用 `to - 1` 反查，这样空行例外
+ * （to = from + 1）与 includeEOL（to = 下一行行首）都能落回“真正被选中的那一行”。
+ *
+ * @param {import("@codemirror/state").EditorState} state
+ * @param {LineBlock} range
+ * @returns {{ first: number, last: number }}
+ */
+function rowSpan(state, range) {
+  const first = state.doc.lineAt(range.from).number;
+  const last = state.doc.lineAt(range.to > range.from ? range.to - 1 : range.from).number;
+  return { first, last: Math.max(first, last) };
+}
+
+/**
+ * 行号栏逐行高亮要的“行首位置”列表。
+ * CM6 的 gutterLineClass 每行只认落在行首的 point marker（跨行 range 只命中 range.from 那一行），
+ * 所以必须把选区覆盖的每一行拆成一个行首 marker。
+ *
+ * @param {import("@codemirror/state").EditorState} state
+ * @param {readonly LineBlock[]} ranges
+ * @returns {number[]}
+ */
+function gutterLineStarts(state, ranges) {
+  /** @type {number[]} */
+  const starts = [];
+  /** @type {Set<number>} */
+  const seen = new Set();
+  for (const range of ranges) {
+    if (range.from === range.to) {
+      // 零宽选区（例如单击文末空行）：单行点亮，与其它规则保持一致
+      const pos = state.doc.lineAt(range.from).from;
+      if (!seen.has(pos)) {
+        seen.add(pos);
+        starts.push(pos);
+      }
+      continue;
+    }
+    let line = state.doc.lineAt(range.from);
+    for (;;) {
+      // 只收集“行首 < 选区终点”的行：终点落在下一行行首时不会把下一行点亮
+      if (line.from < range.to && !seen.has(line.from)) {
+        seen.add(line.from);
+        starts.push(line.from);
+      }
+      if (line.to >= range.to || line.number >= state.doc.lines) break;
+      line = state.doc.line(line.number + 1);
+    }
+  }
+  return starts.sort((a, b) => a - b);
+}
+
+/**
+ * 按行扩展 / 收缩后的行号区间（纯函数，便于单测）。
+ * 收缩到只剩锚点那一行就停住，不把选区收成光标；到文档首尾会被钳制。
+ *
+ * @param {{ first: number, last: number }} span - 当前覆盖的行号区间
+ * @param {boolean} headAbove - head 在上（向上拖出来的选区）
+ * @param {1 | -1} dir - 1 = 向下按键，-1 = 向上按键
+ * @param {number} rows - 一次移动几行
+ * @param {number} lineCount - 文档总行数
+ * @returns {{ first: number, last: number }}
+ */
+function extendRowSpan(span, headAbove, dir, rows, lineCount) {
+  let first = span.first;
+  let last = span.last;
+  if (dir > 0) {
+    if (headAbove) first += rows;
+    else last += rows;
+  } else if (headAbove) {
+    first -= rows;
+  } else {
+    last -= rows;
+  }
+  first = Math.max(1, first);
+  last = Math.min(lineCount, last);
+  if (first > last) {
+    if (headAbove) first = last;
+    else last = first;
+  }
+  return { first, last };
+}
+
+/**
+ * 整行删除补偿：严格行尾的选区末尾正好落在行末时，删除 / 剪切要多删一个换行符，
+ * 否则拖选几行后按 Backspace 只会清空内容、留下一个空行。
+ * 已经含换行（includeEOL 单击，终点在下一行行首）时不重复多删。
+ *
+ * @param {import("@codemirror/state").EditorState} state
+ * @param {LineBlock} range
+ * @returns {number}
+ */
+function extendedDeleteEnd(state, range) {
+  if (range.to >= state.doc.length) return range.to; // 文末没有换行可多删
+  const line = state.doc.lineAt(range.to);
+  if (line.from === range.to && range.to > range.from) return range.to; // 已含行尾换行
+  if (line.to === range.to) return range.to + 1; // 正好停在行末：多删这个换行
+  return range.to;
+}
+
 /* ------------------------------------------------------------------ *
  * 3. 坐标 -> 行块（三档降级，兼容 Obsidian 内置的 @codemirror/view 新旧版本）
  * ------------------------------------------------------------------ */
@@ -227,23 +354,30 @@ function blockAtClientY(view, clientY, clamp) {
 }
 
 /* ------------------------------------------------------------------ *
- * 4. 拖拽高亮（把正在选中的行块同步到 gutter 上）
+ * 4. 行号栏高亮（由“行号区产生的整行选区”驱动，逐行 point marker）
  * ------------------------------------------------------------------ */
 
-/** @type {import("@codemirror/state").StateEffectType<{ from: number, to: number } | null>} */
-const setDragHighlight = StateEffect.define();
+/**
+ * 事务标记：这条事务携带的是插件自己产生的整行选区（拖动 / 单击 / Shift / Ctrl 点击 /
+ * 键盘按行扩展）。内容区点击、Ctrl+A、撤销重做等其它来源改选区时，高亮必须立刻失效。
+ */
+const gutterSelection = Annotation.define();
 
-const dragHighlightField = StateField.define({
-  // 用 JSDoc 断言把初始值标成「区间或 null」，StateField<Value> 的 Value 由它推断而来
-  create: () => /** @type {{ from: number, to: number } | null} */ (null),
+const lineSelectionField = StateField.define({
+  // 用 JSDoc 断言把初始值标成「区间数组或 null」，StateField<Value> 的 Value 由它推断而来
+  create: () => /** @type {{ ranges: LineBlock[] } | null} */ (null),
   /**
-   * @param {{ from: number, to: number } | null} value
+   * @param {{ ranges: LineBlock[] } | null} value
    * @param {import("@codemirror/state").Transaction} tr
    */
   update(value, tr) {
-    for (const e of tr.effects) if (e.is(setDragHighlight)) return e.value;
-    // 文档被改动时位置可能失效，直接撤掉高亮，宁可不画也不错画
+    // 文档一改位置就可能失效，直接撤掉高亮，宁可不亮也不错亮
     if (tr.docChanged) return null;
+    if (tr.annotation(gutterSelection)) {
+      return { ranges: tr.newSelection.ranges.map((r) => ({ from: r.from, to: r.to })) };
+    }
+    // 不是插件产生的选区变化（点击正文、Ctrl+A、撤销……）-> 失效
+    if (tr.selection) return null;
     return value;
   },
 });
@@ -255,10 +389,13 @@ class SelectedLineMarker extends GutterMarker {
   }
 }
 
-const dragHighlightGutterClass = gutterLineClass.compute([dragHighlightField], (state) => {
-  const r = state.field(dragHighlightField);
-  if (!r) return RangeSet.empty;
-  return RangeSet.of([new SelectedLineMarker().range(r.from, r.to)], true);
+const lineSelectionGutterClass = gutterLineClass.compute([lineSelectionField], (state) => {
+  const value = state.field(lineSelectionField);
+  if (!value) return RangeSet.empty;
+  return RangeSet.of(
+    gutterLineStarts(state, value.ranges).map((pos) => new SelectedLineMarker().range(pos)),
+    true
+  );
 });
 
 /* ------------------------------------------------------------------ *
@@ -277,6 +414,7 @@ const dragHighlightGutterClass = gutterLineClass.compute([dragHighlightField], (
  * @property {LineBlock} lastBlock
  * @property {number} lastY
  * @property {number | null} raf
+ * @property {boolean} wasTracked - 按下前是否已有整行选区（Esc 回滚时用于恢复高亮）
  * @property {boolean} moved
  * @property {boolean} autoScroll
  */
@@ -317,7 +455,7 @@ function applySelection(d, block) {
 
   view.dispatch({
     selection,
-    effects: setDragHighlight.of({ from: selection.main.from, to: selection.main.to }),
+    annotations: gutterSelection.of(true),
     userEvent: "select.pointer",
   });
 }
@@ -396,9 +534,11 @@ function endDrag(restore) {
   window.removeEventListener("pointercancel", onPointerUp, true);
   window.removeEventListener("keydown", onKeyDown, true);
   if (restore && d.view.dom.isConnected) {
-    d.view.dispatch({ selection: restore, effects: setDragHighlight.of(null) });
-  } else if (d.view.dom.isConnected) {
-    d.view.dispatch({ effects: setDragHighlight.of(null) });
+    // Esc 回滚：只有按下前本来就是整行选区时才恢复高亮，否则让高亮失效
+    d.view.dispatch({
+      selection: restore,
+      annotations: d.wasTracked ? gutterSelection.of(true) : undefined,
+    });
   }
 }
 
@@ -417,10 +557,12 @@ function startDrag(view, block, event, settings) {
   const opts = { includeEOL: settings.includeEOL };
   const mode = modifierOf(event);
   const base = view.state.selection;
+  const wasTracked = view.state.field(lineSelectionField, false) !== null;
 
   if (mode === "add") {
     view.dispatch({
       selection: toggleLineRange(view.state, base.ranges, block, opts),
+      annotations: gutterSelection.of(true),
       userEvent: "select.pointer",
     });
     return true;
@@ -429,6 +571,7 @@ function startDrag(view, block, event, settings) {
     const anchorPos = view.state.selection.main.anchor;
     view.dispatch({
       selection: rangeForShift(view.state, anchorPos, block, opts),
+      annotations: gutterSelection.of(true),
       userEvent: "select.pointer",
     });
     return true;
@@ -443,6 +586,7 @@ function startDrag(view, block, event, settings) {
     lastBlock: block,
     lastY: event.clientY,
     raf: null,
+    wasTracked,
     moved: false,
     autoScroll: settings.autoScroll,
   };
@@ -450,7 +594,7 @@ function startDrag(view, block, event, settings) {
   // 按下即选中整行，与 VS Code 一致
   view.dispatch({
     selection: rangeForLine(view.state, block, opts),
-    effects: setDragHighlight.of({ from: block.from, to: blockEnd(view.state, block, opts) }),
+    annotations: gutterSelection.of(true),
     userEvent: "select.pointer",
   });
 
@@ -458,6 +602,115 @@ function startDrag(view, block, event, settings) {
   window.addEventListener("pointerup", onPointerUp, true);
   window.addEventListener("pointercancel", onPointerUp, true);
   window.addEventListener("keydown", onKeyDown, true);
+  return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * 5-B. 整行选区的键盘命令：Shift 按行扩展 / 删除·剪切补偿
+ *
+ * 严格行尾之后 head 停在末尾行行末：原生的 Shift+↑/↓ 会按列移动，选区不再是整行；
+ * 同时整行删除 / 剪切会留下空行。下面的命令只接管“行号区产生的整行选区”，
+ * 其余情况一律返回 false，交回原生按键行为。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 一屏大约能放下多少行（PageUp / PageDown 的步长）。
+ *
+ * @param {import("@codemirror/view").EditorView} view
+ * @returns {number}
+ */
+function pageRowStep(view) {
+  const lineHeight = view.defaultLineHeight || 20;
+  const rows = Math.round(view.scrollDOM.clientHeight / lineHeight) - 1;
+  return Math.max(1, rows);
+}
+
+/**
+ * Shift + ↑/↓（PageUp / PageDown）：整行选区按视觉行块扩展 / 收缩，行号高亮跟着走。
+ * 只有当前选区是“行号区整行选区”时才接管，否则返回 false 让原生按键生效。
+ *
+ * @param {import("@codemirror/view").EditorView} view
+ * @param {1 | -1} dir - 1 = 向下，-1 = 向上
+ * @param {number} rows - 一次移动多少行
+ * @returns {boolean}
+ */
+function extendLineSelection(view, dir, rows) {
+  const state = view.state;
+  if (!state.field(lineSelectionField, false)) return false;
+  const selection = state.selection;
+  const span = rowSpan(state, selection.main);
+  // 向上拖出来的选区 head 在上，向下拖出来的 head 在下：两者“扩展”的方向相反
+  const headAbove = selection.main.head < selection.main.anchor;
+  const next = extendRowSpan(span, headAbove, dir, rows, state.doc.lines);
+  if (next.first === span.first && next.last === span.last) return true;
+  const first = next.first;
+  const last = next.last;
+
+  const firstLine = state.doc.line(first);
+  const lastLine = state.doc.line(last);
+  const end = selectionEnd(state, { from: lastLine.from, to: lastLine.to });
+  const range = headAbove
+    ? EditorSelection.range(end, firstLine.from)
+    : EditorSelection.range(firstLine.from, end);
+  view.dispatch({
+    selection: selection.replaceRange(range, selection.mainIndex),
+    annotations: gutterSelection.of(true),
+    userEvent: "select.keyboard",
+  });
+  return true;
+}
+
+/**
+ * 整行选区上的删除（Backspace / Delete 共用）：末尾多删一个换行符，
+ * 否则拖选几行后删除只会清空内容、留下一个空行。
+ *
+ * @param {import("@codemirror/view").EditorView} view
+ * @returns {boolean}
+ */
+function deleteTrackedLineSelection(view) {
+  const state = view.state;
+  if (!state.field(lineSelectionField, false)) return false;
+  const ends = state.selection.ranges.map((range) => extendedDeleteEnd(state, range));
+  if (ends.every((end, i) => end === state.selection.ranges[i].to)) return false;
+  const spec = state.changeByRange((range) => {
+    const end = extendedDeleteEnd(state, range);
+    return { changes: { from: range.from, to: end }, range: EditorSelection.cursor(range.from) };
+  });
+  view.dispatch({ changes: spec.changes, selection: spec.selection, userEvent: "delete" });
+  return true;
+}
+
+/**
+ * 整行选区上的 Ctrl/Cmd + X：先按补偿后的区间写入剪贴板，再删除。
+ * 没有 navigator.clipboard 时交回原生剪切（宁可不补偿，也不吞掉剪贴板内容）。
+ *
+ * @param {import("@codemirror/view").EditorView} view
+ * @returns {boolean}
+ */
+function cutTrackedLineSelection(view) {
+  const state = view.state;
+  if (!state.field(lineSelectionField, false)) return false;
+  const ranges = state.selection.ranges;
+  const ends = ranges.map((range) => extendedDeleteEnd(state, range));
+  if (ends.every((end, i) => end === ranges[i].to)) return false;
+  const clipboard = typeof navigator === "undefined" ? null : navigator.clipboard;
+  if (!clipboard || typeof clipboard.writeText !== "function") return false;
+  const text = ranges.map((range, i) => state.sliceDoc(range.from, ends[i])).join("\n");
+  const spec = state.changeByRange((range) => {
+    const end = extendedDeleteEnd(state, range);
+    return { changes: { from: range.from, to: end }, range: EditorSelection.cursor(range.from) };
+  });
+  clipboard.writeText(text).then(
+    () => {
+      // 剪贴板写入是异步的：期间文档若已被改动，就放弃删除，别用旧 changeSet 误删
+      if (view.dom.isConnected && view.state.doc === state.doc) {
+        view.dispatch({ changes: spec.changes, selection: spec.selection, userEvent: "delete" });
+      }
+    },
+    () => {
+      /* 写剪贴板失败：什么都不做，避免“没复制却删了” */
+    }
+  );
   return true;
 }
 
@@ -559,8 +812,21 @@ function lineDragSelect(getSettings) {
   return [
     // 多选区必须显式打开，否则 CM6 会把 Ctrl/Cmd 追加的选区合并掉
     EditorState.allowMultipleSelections.of(true),
-    dragHighlightField,
-    dragHighlightGutterClass,
+    lineSelectionField,
+    lineSelectionGutterClass,
+    // 整行选区的键盘语义：Shift 按行扩展、删除 / 剪切补一个换行。
+    // 只在“行号区产生的整行选区”上生效，其它情况 run 返回 false 交回原生按键。
+    Prec.highest(
+      keymap.of([
+        { key: "Shift-ArrowDown", run: (view) => extendLineSelection(view, 1, 1) },
+        { key: "Shift-ArrowUp", run: (view) => extendLineSelection(view, -1, 1) },
+        { key: "Shift-PageDown", run: (view) => extendLineSelection(view, 1, pageRowStep(view)) },
+        { key: "Shift-PageUp", run: (view) => extendLineSelection(view, -1, pageRowStep(view)) },
+        { key: "Backspace", run: (view) => deleteTrackedLineSelection(view) },
+        { key: "Delete", run: (view) => deleteTrackedLineSelection(view) },
+        { key: "Mod-x", run: (view) => cutTrackedLineSelection(view) },
+      ])
+    ),
     // 优先级压到最高，保证我们的事件先于其它插件的 gutter handler
     Prec.highest(body),
   ];
@@ -692,8 +958,10 @@ class LineDragSelectSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("选区包含行尾换行符")
-      .setDesc("与 VS Code 一致：选中整行后按 Backspace 或剪切可整行移除。")
+      .setName("单击 / Shift 整行时包含行尾换行符")
+      .setDesc(
+        "打开后，单击或 Shift 点击行号时选区吞掉行尾换行符，按 Backspace 或剪切可整行移除；拖动始终严格停在末尾行行尾。"
+      )
       .addToggle((t) =>
         t.setValue(this.plugin.settings.includeEOL).onChange(async (v) => {
           this.plugin.settings.includeEOL = v;
@@ -712,7 +980,7 @@ class LineDragSelectSettingTab extends PluginSettingTab {
       );
 
     containerEl.createEl("p", {
-      text: "操作：单击行号选整行；按住左键上下拖动连续选多行；Shift+点击 扩展；Ctrl/Cmd+点击 追加或取消单行选区；拖拽中按 Esc 取消。",
+      text: "操作：单击行号选整行；按住左键上下拖动连续选多行；Shift+点击 扩展；Ctrl/Cmd+点击 追加或取消单行选区；拖拽中按 Esc 取消；选中多行后 Shift+↑/↓（含 PageUp/PageDown）按整行加选一行，Backspace / Delete / Ctrl(Cmd)+X 会把整行连同行尾换行一起删除。选中的行号会同步高亮。",
       cls: "setting-item-description",
     });
   }
@@ -733,10 +1001,24 @@ module.exports.__test = {
   DEFAULT_SETTINGS: { ...DEFAULT_SETTINGS },
   blockAtClientY,
   blockEnd,
+  selectionEnd,
   rangeForLine,
   rangeForDrag,
   rangeForShift,
   toggleLineRange,
   addRange,
   sameBlock,
+  rowSpan,
+  gutterLineStarts,
+  extendRowSpan,
+  extendedDeleteEnd,
+  // 高亮状态（供单测直接构造 / 断言插件事务的来源标记）
+  gutterSelection,
+  lineSelectionField,
+  lineSelectionGutterClass,
+  // 键盘命令（供单测用最小假 view 驱动）
+  pageRowStep,
+  extendLineSelection,
+  deleteTrackedLineSelection,
+  cutTrackedLineSelection,
 };

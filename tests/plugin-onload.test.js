@@ -198,8 +198,8 @@ test("插件类可实例化，onload 注册 CM6 扩展 / 设置页 / 检查行�
 
   assert.deepEqual(
     { ...plugin.settings },
-    { gutterMode: "hook", includeEOL: true, autoScroll: true },
-    "loadSettings 应把默认配置合并进 plugin.settings"
+    { gutterMode: "hook", includeEOL: false, autoScroll: true },
+    "loadSettings 应把默认配置合并进 plugin.settings（拖动严格行尾，includeEOL 默认关）"
   );
 });
 

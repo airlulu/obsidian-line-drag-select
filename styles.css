@@ -3,8 +3,9 @@ body.lds-own-gutter .cm-gutters .cm-gutter.cm-lineNumbers:not(.cm-lds-own) {
   display: none;
 }
 
-/* 拖拽经过的行块，在 gutter 上给出 VS Code 那样的反馈 */
-.cm-gutters .cm-gutterElement.cm-lds-selected {
+/* 整行选区覆盖的行，在行号栏上给出 VS Code 那样的反馈
+   （只染行号列，不染折叠箭头 / 其它 gutter 列） */
+.cm-gutters .cm-gutter.cm-lineNumbers .cm-gutterElement.cm-lds-selected {
   background-color: var(--text-selection, rgba(120, 120, 120, 0.18));
 }
 

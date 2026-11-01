@@ -29,7 +29,8 @@ Module._resolveFilename = function patchedResolveFilename(request, ...rest) {
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { EditorState, EditorSelection } = require("@codemirror/state");
+const { EditorState, EditorSelection, RangeSet } = require("@codemirror/state");
+const { gutterLineClass } = require("@codemirror/view");
 
 /** 被测插件模块：CommonJS require 即加载，但不会触发 Obsidian 的 onload。 */
 const pluginModule = require("../main.js");
@@ -38,12 +39,17 @@ const {
   DEFAULT_SETTINGS,
   blockAtClientY,
   blockEnd,
+  selectionEnd,
   rangeForLine,
   rangeForDrag,
   rangeForShift,
   toggleLineRange,
   addRange,
   sameBlock,
+  rowSpan,
+  gutterLineStarts,
+  extendRowSpan,
+  extendedDeleteEnd,
 } = testApi;
 
 /** "aaa\nbbb\nccc\nddd" -> 每行 3 字符；positions: L1 0-3, L2 4-7, L3 8-11, L4 12-15 */
@@ -87,12 +93,17 @@ test("main.js 导出契约：两种 Obsidian 导出约定 + __test 纯函数面"
   for (const name of [
     "blockAtClientY",
     "blockEnd",
+    "selectionEnd",
     "rangeForLine",
     "rangeForDrag",
     "rangeForShift",
     "toggleLineRange",
     "addRange",
     "sameBlock",
+    "rowSpan",
+    "gutterLineStarts",
+    "extendRowSpan",
+    "extendedDeleteEnd",
   ]) {
     assert.equal(
       typeof testApi[name],
@@ -105,8 +116,8 @@ test("main.js 导出契约：两种 Obsidian 导出约定 + __test 纯函数面"
 test("DEFAULT_SETTINGS：默认配置值", () => {
   assert.deepEqual(
     DEFAULT_SETTINGS,
-    { gutterMode: "hook", includeEOL: true, autoScroll: true },
-    "DEFAULT_SETTINGS 默认值应为 hook / includeEOL=true / autoScroll=true"
+    { gutterMode: "hook", includeEOL: false, autoScroll: true },
+    "DEFAULT_SETTINGS 默认值应为 hook / includeEOL=false / autoScroll=true（拖动始终严格行尾）"
   );
 });
 
@@ -138,21 +149,31 @@ test("单击行号：选中整行", () => {
   );
 });
 
-test("拖拽：以按下行为锚，逐行扩展", () => {
+test("拖拽：终点严格落在末尾行行尾，与 includeEOL 无关", () => {
   assert.deepEqual(
     pair(rangeForDrag(state, L(2), L(4), yes)),
     [4, 15],
-    "从第2行向下拖到第4行"
+    "从第2行向下拖到末行第4行（末行没有换行可吞）"
   );
   assert.deepEqual(
     pair(rangeForDrag(state, L(4), L(2), yes)),
     [15, 4],
-    "从第4行向上拖到第2行"
+    "从末行向上拖到第2行"
+  );
+  assert.deepEqual(
+    pair(rangeForDrag(state, L(2), L(3), yes)),
+    [4, 11],
+    "向下拖到第3行：终点是 11（第3行行末），不是 12（第4行行首）"
+  );
+  assert.deepEqual(
+    pair(rangeForDrag(state, L(3), L(2), no)),
+    [11, 4],
+    "向上拖到第2行：从第3行行末到第2行行首"
   );
   assert.deepEqual(
     pair(rangeForDrag(state, L(2), L(2), yes)),
-    [4, 8],
-    "原地按下不移动"
+    [4, 7],
+    "原地按下不移动（严格行尾，不吞换行）"
   );
 });
 
@@ -321,4 +342,154 @@ test("blockAtClientY 档3：posAtCoords 返回 null 时为 null，不抛错", ()
     posAtCoords: () => null,
   };
   assert.equal(blockAtClientY(view, 50, true), null, "posAtCoords 返回 null 时应返回 null");
+});
+
+/* ------------------------------------------------------------------ *
+ * 严格行尾 / 空行例外 / 行号栏高亮行 / 删除补偿
+ * ------------------------------------------------------------------ */
+
+test("selectionEnd：严格行尾 + 空行例外", () => {
+  assert.equal(selectionEnd(state, L(2)), 7, "非空行严格停在行末，不吞换行");
+  assert.equal(selectionEnd(state, L(4)), 15, "末行没有换行可吞");
+
+  const withEmpty = EditorState.create({ doc: "aaa\n\nccc" });
+  assert.equal(
+    selectionEnd(withEmpty, { from: 4, to: 4 }),
+    5,
+    "空行例外：吞掉它自己的换行符，选区才可见（否则零宽选区删掉上一行换行）"
+  );
+
+  const emptyTail = EditorState.create({ doc: "aaa\nbbb\n" });
+  assert.equal(selectionEnd(emptyTail, { from: 8, to: 8 }), 8, "文末空行没有换行可吞");
+});
+
+test("Shift 扩展：includeEOL 只影响单击 / Shift 的末端", () => {
+  assert.deepEqual(
+    pair(rangeForShift(state, 4, L(3), yes)),
+    [4, 12],
+    "includeEOL 打开：Shift 到第3行仍吞换行（保留一键删整行）"
+  );
+  assert.deepEqual(
+    pair(rangeForShift(state, 4, L(3), no)),
+    [4, 11],
+    "includeEOL 关闭：Shift 到第3行严格停在第3行行末"
+  );
+});
+
+test("rowSpan：把选区映射回覆盖的行号区间", () => {
+  assert.deepEqual(rowSpan(state, { from: 4, to: 11 }), { first: 2, last: 3 }, "第2–3行");
+  assert.deepEqual(
+    rowSpan(state, { from: 4, to: 12 }),
+    { first: 2, last: 3 },
+    "终点落在下一行行首时仍只算到上一行"
+  );
+
+  const withEmpty = EditorState.create({ doc: "aaa\n\nccc" });
+  assert.deepEqual(
+    rowSpan(withEmpty, { from: 4, to: 5 }),
+    { first: 2, last: 2 },
+    "空行例外（to = from + 1 = 下一行行首）仍落回空行那一行"
+  );
+});
+
+test("gutterLineStarts：每行一个行首 marker，终点在下一行行首时不多亮一行", () => {
+  assert.deepEqual(gutterLineStarts(state, [{ from: 4, to: 11 }]), [4, 8], "严格选区覆盖第2–3行");
+  assert.deepEqual(
+    gutterLineStarts(state, [{ from: 4, to: 12 }]),
+    [4, 8],
+    "includeEOL 的终点（第4行行首）不能把第4行行首点亮"
+  );
+  assert.deepEqual(gutterLineStarts(state, [{ from: 8, to: 15 }]), [8, 12], "第3行到末行");
+
+  const emptyTail = EditorState.create({ doc: "aaa\nbbb\n" });
+  assert.deepEqual(
+    gutterLineStarts(emptyTail, [{ from: 8, to: 8 }]),
+    [8],
+    "文末空行单击是零宽选区，也要点亮这一行"
+  );
+});
+
+test("extendedDeleteEnd：删除时多删末尾一个换行，已含换行则不重复", () => {
+  assert.equal(extendedDeleteEnd(state, { from: 4, to: 7 }), 8, "终点在行末 -> 补偿一个换行");
+  assert.equal(
+    extendedDeleteEnd(state, { from: 4, to: 8 }),
+    8,
+    "终点已在下一行行首（已含换行）-> 不重复补偿"
+  );
+  assert.equal(extendedDeleteEnd(state, { from: 12, to: 15 }), 15, "文末没有换行可多删");
+  assert.equal(extendedDeleteEnd(state, { from: 4, to: 5 }), 5, "终点在行内 -> 不补偿");
+});
+
+test("extendRowSpan：Shift+方向键按行扩展 / 收缩的行号区间", () => {
+  const span = { first: 3, last: 6 };
+  assert.deepEqual(extendRowSpan(span, false, 1, 1, 20), { first: 3, last: 7 }, "向下扩展一行");
+  assert.deepEqual(extendRowSpan(span, false, -1, 1, 20), { first: 3, last: 5 }, "向下选区向上收缩一行");
+  assert.deepEqual(extendRowSpan(span, true, -1, 1, 20), { first: 2, last: 6 }, "向上扩展一行");
+  assert.deepEqual(extendRowSpan(span, true, 1, 1, 20), { first: 4, last: 6 }, "向上选区向下收缩一行");
+
+  assert.deepEqual(
+    extendRowSpan({ first: 3, last: 3 }, false, -1, 1, 20),
+    { first: 3, last: 3 },
+    "收缩到锚点那一行就停住，不把选区收成光标"
+  );
+  assert.deepEqual(
+    extendRowSpan({ first: 6, last: 6 }, true, 1, 1, 20),
+    { first: 6, last: 6 },
+    "向上选区收缩到锚点那一行也停住"
+  );
+
+  assert.deepEqual(
+    extendRowSpan({ first: 8, last: 9 }, false, 1, 5, 10),
+    { first: 8, last: 10 },
+    "向下扩展被文档末行钳制"
+  );
+  assert.deepEqual(
+    extendRowSpan({ first: 2, last: 6 }, true, -1, 5, 10),
+    { first: 1, last: 6 },
+    "向上扩展被文档首行钳制"
+  );
+  assert.deepEqual(extendRowSpan(span, false, 1, 10, 20), { first: 3, last: 16 }, "PageDown 一次移动 10 行");
+});
+
+/* ------------------------------------------------------------------ *
+ * 行号栏高亮：由插件事务的来源标记驱动（整行选区 -> 逐行 marker）
+ * ------------------------------------------------------------------ */
+
+test("行号栏高亮：插件事务点亮每一行，其它来源改选区 / 改文档后立即失效", () => {
+  const { gutterSelection, lineSelectionField, lineSelectionGutterClass } = testApi;
+  const markedStarts = (state) => {
+    const marks = [];
+    // gutterLineClass 是无 combine 的 facet，读出来是 RangeSet 数组（gutter 内部同样用 RangeSet.iter）
+    const cursor = RangeSet.iter(state.facet(gutterLineClass), 0);
+    while (cursor.value) {
+      marks.push(cursor.from);
+      cursor.next();
+    }
+    return marks;
+  };
+
+  let s = EditorState.create({
+    doc: "aaa\nbbb\nccc\nddd",
+    extensions: [lineSelectionField, lineSelectionGutterClass],
+  });
+  assert.deepEqual(markedStarts(s), [], "初始没有整行选区 -> 不亮");
+
+  // 插件自己产生的整行选区（拖动第2–3行）：每一行一个 marker
+  s = s.update({
+    selection: EditorSelection.create([EditorSelection.range(4, 11)]),
+    annotations: gutterSelection.of(true),
+  }).state;
+  assert.deepEqual(markedStarts(s), [4, 8], "第2–3行各点亮一个行首 marker");
+
+  // 内容区点击等其它来源改选区：高亮失效
+  s = s.update({ selection: EditorSelection.single(4) }).state;
+  assert.deepEqual(markedStarts(s), [], "非插件事务改选区后高亮失效");
+
+  // 插件事务 + 文档改动：宁可不亮也不错亮
+  s = s.update({
+    selection: EditorSelection.create([EditorSelection.range(4, 11)]),
+    annotations: gutterSelection.of(true),
+  }).state;
+  s = s.update({ changes: { from: 0, insert: "x" } }).state;
+  assert.deepEqual(markedStarts(s), [], "文档改动后高亮失效");
 });

@@ -1,0 +1,249 @@
+<!doctype html>
+<!--
+  主题：obsidian-line-drag-select —— 行号区从第 3 行拖到第 6 行时，选区下界该停在哪里。
+  对应问题：Q1 旧下界落在第 7 行行首（多吞换行）· Q2 新下界严格止于第 6 行行尾 ·
+           Q3 第 3–6 行行号用 .cm-lds-selected 高亮且松开后保留 · Q4 includeEOL 默认关闭、只影响单击/Shift，空行例外。
+  假设：Q4「includeEOL 默认关闭」按访谈 brief 绘制；无其他 assumed 区域。
+  版本：v1 新建。界面字体用 Obsidian 默认 Inter 的系统回退（离线可用），不含外链资源。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>行号区拖动多选 · 选区下界对比</title>
+<style>
+*,*::before,*::after{box-sizing:border-box}
+:root{
+  --bg:#f2f3f5; --surface:#fff; --surface-2:#fafafa;
+  --border:#e1e4e8; --border-2:#d5d8dd;
+  --text:#2e3338; --muted:#6a7077; --faint:#b2b6bc;
+  --accent:#2f7fe0; --text-selection:rgba(43,120,220,.22);
+  --red:#ce3f3f; --red-bg:#fdeeee; --green:#2c8f61;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+  --ui:system-ui,-apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;
+}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font-family:var(--ui);-webkit-font-smoothing:antialiased}
+.wrap{max-width:980px;margin:0 auto;padding:22px 26px 26px}
+.top{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+h1{font-size:16px;font-weight:650;margin:0;letter-spacing:.2px}
+.meta{font-size:11.5px;color:var(--muted);margin-top:4px}
+.meta code{font-family:var(--mono);font-size:10.5px;background:#e9ebee;padding:1px 5px;border-radius:4px;color:#4a4f56}
+.legend{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);padding-bottom:2px}
+.swatch{width:8px;height:8px;border-radius:2px}
+.swatch.old{background:#e5a9a9}.swatch.new{background:#8ec7a9}
+.legend .gap{width:6px}
+.scene{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.pane{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden;box-shadow:0 10px 24px -20px rgba(20,30,50,.55)}
+.pane.new{border-color:#cfdcea}
+.tab{display:flex;align-items:center;gap:7px;height:33px;padding:0 11px;background:var(--surface-2);border-bottom:1px solid var(--border);font-size:11.5px;color:var(--muted)}
+.tab .dot{width:6px;height:6px;border-radius:50%;background:var(--faint)}
+.pane.new .tab .dot{background:var(--accent)}
+.tab .file{color:var(--text);font-size:12px}
+.tab .close{margin-left:auto;font-size:14px;color:var(--faint);line-height:1}
+.editor{display:flex;align-items:stretch;padding:6px 0 8px}
+.gutter{width:46px;flex:0 0 46px;border-right:1px solid #eef0f3;text-align:right}
+.cell{height:24px;line-height:24px;padding-right:9px;font-size:12.5px;color:var(--faint);font-variant-numeric:tabular-nums;cursor:default;user-select:none;position:relative}
+.pane.new .cell{cursor:ns-resize}
+.pane.new .gutter{touch-action:none}
+.cell.sel{background:var(--text-selection);color:#3a4048}
+.cell.bad{color:var(--red);background:rgba(206,63,63,.10);outline:1.5px dashed rgba(206,63,63,.75);outline-offset:-3px;border-radius:3px}
+.code{flex:1;min-width:0;padding:0 12px}
+.row{position:relative;display:flex;align-items:center;height:24px;font-size:14px;line-height:24px;white-space:nowrap;border-radius:2px}
+.row.sel{background:var(--text-selection)}
+.k-h1{font-size:16px;font-weight:650}
+.k-h2{font-size:14px;font-weight:650;color:#3d434a}
+.k-li .bullet{color:var(--accent);width:13px;flex:0 0 13px}
+.end{margin-left:7px;display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--accent);font-weight:500}
+.end::before{content:"";width:2px;height:14px;background:var(--accent);border-radius:1px}
+.caret{width:2px;height:16px;flex:0 0 2px;background:var(--red);border-radius:1px;margin-right:2px;box-shadow:0 0 0 2px rgba(206,63,63,.12)}
+.row.at7::before{content:"";position:absolute;left:-5px;top:4px;bottom:4px;width:2px;background:rgba(206,63,63,.45);border-radius:2px}
+.tag-old{margin-left:auto;font-size:10px;line-height:1.5;white-space:nowrap;color:var(--red);background:var(--red-bg);border:1px solid #f3caca;border-radius:4px;padding:1px 6px}
+.status{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 11px;border-top:1px solid var(--border);background:var(--surface-2);font-size:10.5px;color:var(--muted)}
+.status .right{display:flex;align-items:center;gap:8px}
+.status .mono{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:10.5px;color:#565c64}
+.bad-end{color:var(--red)}
+#dragState.live{color:var(--accent)}
+.mini{font:inherit;font-size:10px;line-height:1.5;padding:0 6px;border:1px solid var(--border-2);border-radius:4px;background:#fff;color:var(--muted);cursor:pointer}
+.mini:hover{border-color:#b9c8da;color:var(--accent)}
+.cap{display:flex;gap:8px;align-items:flex-start;padding:10px 11px 12px;border-top:1px solid var(--border);font-size:11.5px;line-height:1.6;color:var(--muted)}
+.badge{flex:0 0 auto;font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;line-height:1.6}
+.badge.old{color:var(--red);background:var(--red-bg);border:1px solid #f3caca}
+.badge.new{color:var(--green);background:#eaf7f0;border:1px solid #c7e8d6}
+.cap b{color:var(--text);font-weight:600}
+.notes{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
+.note{background:#fff;border:1px solid var(--border);border-radius:7px;padding:9px 11px 10px;font-size:11px;line-height:1.65;color:var(--muted)}
+.note h3{margin:0 0 3px;font-size:11.5px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:5px}
+.note h3 .k{width:5px;height:5px;border-radius:50%;background:var(--accent);flex:0 0 5px}
+.note b{color:var(--text);font-weight:600}
+.note code{font-family:var(--mono);font-size:10px;background:#eef1f4;padding:0 4px;border-radius:3px;color:#4a4f56}
+.foot{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:11px;color:var(--muted);flex-wrap:wrap}
+.foot .grow{flex:1}
+.foot .key{font-family:var(--mono);font-size:10px;padding:1px 6px;border:1px solid var(--border-2);border-bottom-width:2px;border-radius:4px;background:#fff;color:#5a6068}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <h1>行号区拖动多选 · 选区下界</h1>
+      <div class="meta"><code>obsidian-line-drag-select</code> · 从第 3 行行号拖到第 6 行 · Obsidian 源码模式</div>
+    </div>
+    <div class="legend"><span class="swatch old"></span>旧行为<span class="gap"></span><span class="swatch new"></span>修复后</div>
+  </div>
+
+  <div class="scene">
+    <section class="pane old" id="old">
+      <div class="tab"><span class="dot"></span><span class="file">行号区拖动多选.md</span><span class="close">×</span></div>
+      <div class="editor"><div class="gutter"></div><div class="code"></div></div>
+      <div class="status"><span>拖到第 6 行后松开</span><span class="mono">L3:0 → <span class="bad-end">L7:0</span></span></div>
+      <div class="cap"><span class="badge old">旧行为</span><span>下界落在<b>第 7 行行首</b>：多吞第 6 行的换行，行号被错误标记，继续 Shift 会从第 7 行往后扩。</span></div>
+    </section>
+
+    <section class="pane new" id="new">
+      <div class="tab"><span class="dot"></span><span class="file">行号区拖动多选.md</span><span class="close">×</span></div>
+      <div class="editor"><div class="gutter"></div><div class="code"></div></div>
+      <div class="status"><span id="dragState">已松开 · 高亮保留</span><span class="right"><span class="mono" id="rangeState">L3:0 → L6:行尾</span><span class="mono" id="countState">4 行</span><button class="mini" id="reset" type="button">重置</button></span></div>
+      <div class="cap"><span class="badge new">修复后</span><span>选区严格止于<b>第 6 行行尾</b>：第 7 行无选区背景、无光标、行号不高亮；第 3–6 行行号的高亮松开后保留。</span></div>
+    </section>
+  </div>
+
+  <div class="notes">
+    <div class="note"><h3><span class="k"></span>includeEOL · 默认关闭</h3>只影响单击行号与 Shift 扩展；<b>拖动不受它影响</b>，始终止于行尾。</div>
+    <div class="note"><h3><span class="k"></span>空行例外</h3>拖到空行时会吞掉它自己的换行，让空行保持可见、能被整行删除。</div>
+    <div class="note"><h3><span class="k"></span><code>.cm-lds-selected</code></h3>选中行的行号用 <code>var(--text-selection)</code> 着色，鼠标松开后依旧保留。</div>
+  </div>
+
+  <div class="foot"><span>在右侧行号区按住并上下拖动，选区终点与行号高亮一起移动</span><span class="grow"></span><span class="key">拖动</span><span>第 3 行 → 第 N 行</span></div>
+</div>
+
+<script>
+const LINES = [
+  { k: 'h1', t: '行号区拖动多选' },
+  { k: 'blank', t: '' },
+  { k: 'li', t: '在行号区按下，向下拖动' },
+  { k: 'li', t: '选区随鼠标逐行扩展' },
+  { k: 'li', t: '每一行的行号同步高亮' },
+  { k: 'li', t: '松开鼠标后高亮保留' },
+  { k: 'h2', t: '为什么需要它' },
+  { k: 'p', t: '原生编辑器只能在正文里拖选，' },
+  { k: 'p', t: '行号区一次只能点中一行。' },
+  { k: 'p', t: '这个插件补齐了 VS Code 的手感。' }
+];
+
+function build(editor) {
+  const gutter = editor.querySelector('.gutter');
+  const code = editor.querySelector('.code');
+  LINES.forEach((line, i) => {
+    const n = String(i + 1);
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    cell.dataset.line = n;
+    cell.textContent = n;
+    gutter.appendChild(cell);
+
+    const row = document.createElement('div');
+    row.className = 'row k-' + line.k;
+    row.dataset.line = n;
+    if (line.k === 'li') {
+      const bullet = document.createElement('span');
+      bullet.className = 'bullet';
+      bullet.textContent = '•';
+      row.appendChild(bullet);
+    }
+    const text = document.createElement('span');
+    text.className = 'txt';
+    text.textContent = line.t || '\u00a0';
+    row.appendChild(text);
+    code.appendChild(row);
+  });
+}
+
+/* 旧行为：静态，展示下界多走一行 */
+const oldEd = document.querySelector('#old .editor');
+build(oldEd);
+const oldRows = [...oldEd.querySelectorAll('.row')];
+[3, 4, 5, 6].forEach(n => {
+  oldRows[n - 1].classList.add('sel');
+  oldEd.querySelector('.cell[data-line="' + n + '"]').classList.add('sel');
+});
+oldEd.querySelector('.cell[data-line="7"]').classList.add('bad');
+const row7 = oldRows[6];
+row7.classList.add('at7');
+row7.insertAdjacentHTML('afterbegin', '<span class="caret" aria-hidden="true"></span>');
+const tag = document.createElement('span');
+tag.className = 'tag-old';
+tag.textContent = '旧下界 · 行首';
+row7.appendChild(tag);
+
+/* 新行为：可拖动，行号高亮跟随 */
+const newEd = document.querySelector('#new .editor');
+build(newEd);
+const cells = [...newEd.querySelectorAll('.cell')];
+const rows = [...newEd.querySelectorAll('.row')];
+const stateEl = document.getElementById('dragState');
+const rangeEl = document.getElementById('rangeState');
+const countEl = document.getElementById('countState');
+let anchor = 3;
+let end = 6;
+let dragging = false;
+
+function paint() {
+  const lo = Math.min(anchor, end);
+  const hi = Math.max(anchor, end);
+  cells.forEach(c => {
+    const n = Number(c.dataset.line);
+    c.classList.toggle('sel', n >= lo && n <= hi);
+  });
+  rows.forEach(r => {
+    const n = Number(r.dataset.line);
+    r.classList.toggle('sel', n >= lo && n <= hi);
+    const old = r.querySelector('.end');
+    if (old) old.remove();
+  });
+  const mark = document.createElement('span');
+  mark.className = 'end';
+  mark.textContent = '行尾';
+  rows[hi - 1].appendChild(mark);
+  rangeEl.textContent = 'L' + lo + ':0 → L' + hi + ':行尾';
+  countEl.textContent = (hi - lo + 1) + ' 行';
+  stateEl.textContent = dragging ? '拖动中 · 行号高亮跟随' : '已松开 · 高亮保留';
+  stateEl.classList.toggle('live', dragging);
+}
+
+newEd.addEventListener('pointerdown', e => {
+  const cell = e.target.closest('.cell');
+  if (!cell) return;
+  e.preventDefault();
+  dragging = true;
+  anchor = Number(cell.dataset.line);
+  end = anchor;
+  paint();
+});
+
+window.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const top = rows[0].getBoundingClientRect().top;
+  const idx = Math.floor((e.clientY - top) / 24) + 1;
+  end = Math.max(1, Math.min(LINES.length, idx));
+  paint();
+});
+
+function stopDrag() {
+  if (!dragging) return;
+  dragging = false;
+  paint();
+}
+window.addEventListener('pointerup', stopDrag);
+window.addEventListener('pointercancel', stopDrag);
+document.getElementById('reset').addEventListener('click', () => {
+  dragging = false;
+  anchor = 3;
+  end = 6;
+  paint();
+});
+
+paint();
+</script>
+</body>
+</html>
