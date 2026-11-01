@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "keywords": ["obsidian", "obsidian-plugin", "codemirror6", "gutter"],
+  "author": "airlulu",
   "license": "MIT",
   "devDependencies": {
     "@codemirror/state": "^6.5.2",

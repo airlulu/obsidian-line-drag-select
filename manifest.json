@@ -4,6 +4,6 @@
   "version": "0.1.0",
   "minAppVersion": "1.4.0",
   "description": "在行号区拖动鼠标选中整行，像 VS Code 一样支持连续多选、Shift 扩展、Ctrl/Cmd 追加选区。",
-  "author": "your-name",
+  "author": "airlulu",
   "isDesktopOnly": false
 }
