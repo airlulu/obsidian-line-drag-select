@@ -3,7 +3,8 @@
   "name": "Line Drag Select",
   "version": "0.1.0",
   "minAppVersion": "1.4.0",
-  "description": "在行号区拖动鼠标选中整行，像 VS Code 一样支持连续多选、Shift 扩展、Ctrl/Cmd 追加选区。",
+  "description": "Select whole lines by dragging across the line-number gutter, with Shift and Ctrl/Cmd modifiers, edge auto-scroll, and gutter highlighting.",
   "author": "airlulu",
+  "authorUrl": "https://github.com/airlulu",
   "isDesktopOnly": false
 }

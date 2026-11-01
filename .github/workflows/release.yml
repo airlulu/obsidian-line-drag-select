@@ -1,0 +1,64 @@
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags: ["*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to release (must equal manifest.json version)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches manifest version
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          version="$(node -p "require('./manifest.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag '$tag' does not match manifest.json version '$version'."
+            exit 1
+          fi
+          echo "Tag '$tag' matches manifest.json version '$version'."
+
+      # The plugin is zero-build: main.js is hand-written CommonJS and is the
+      # exact file Obsidian loads, so there is no npm install / build step.
+      - name: Generate artifact attestation
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
+
+      - name: Create draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            gh release create "$tag" --title "$tag" --draft main.js manifest.json styles.css
+          else
+            gh release create "$tag" --title "$tag" --draft --target "$GITHUB_SHA" main.js manifest.json styles.css
+          fi

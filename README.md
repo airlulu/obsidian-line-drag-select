@@ -30,6 +30,8 @@ Obsidian 的编辑器（CodeMirror 6）本身不支持「鼠标在行号区拖�
 
 需要 Obsidian **1.4.0 及以上**。
 
+**从社区插件目录安装**（上架后）：设置 ▸ 第三方插件 ▸ 浏览，搜索 **Line Drag Select**，安装并启用。
+
 **手动安装**：把仓库里的三个文件复制到
 
 ```
@@ -84,6 +86,7 @@ Obsidian 的编辑器（CodeMirror 6）本身不支持「鼠标在行号区拖�
 ```
 obsidian-line-drag-select/
 ├── manifest.json        # 插件元信息（id: line-drag-select，minAppVersion 1.4.0）
+├── versions.json        # 版本 → minAppVersion 映射（供低版本 Obsidian 回退安装）
 ├── main.js              # ★ 手写 CommonJS 源码 + Obsidian 直接加载的插件文件（约 1100 行）
 ├── styles.css           # 自绘模式隐藏原生行号列 + 选中行高亮
 ├── LICENSE              # MIT 许可证全文（Copyright © 2026 airlulu）
@@ -94,10 +97,11 @@ obsidian-line-drag-select/
 │   ├── commands.test.js      # 键盘命令（9 条）
 │   ├── plugin-onload.test.js # 插件装配 / 设置页 / 真实 CM6 扩展冒烟（4 条）
 │   └── stubs/obsidian.js     # Node 下的最小 obsidian 桩（CM6 用真实安装包）
-└── docs/
-    ├── prd/20261101_Obsidian行号区拖动多选插件-设计方案.md
-    ├── selection-lower-bound-and-gutter-highlight-design.md
-    └── gutter-highlight-block-widget-rows-design.md
+├── docs/
+│   ├── prd/20261101_Obsidian行号区拖动多选插件-设计方案.md
+│   ├── selection-lower-bound-and-gutter-highlight-design.md
+│   └── gutter-highlight-block-widget-rows-design.md
+└── .github/workflows/release.yml # tag → 发布草稿（attestation + 上传 main.js / manifest.json / styles.css）
 ```
 
 `main.js` 按 1–10 编号分节：1 配置项与默认值 → 2 选区纯逻辑 → 3 坐标 → 行块（三档降级）→ 4 行号栏高亮 → 5 拖拽状态机（含 5-B 键盘命令）→ 6 两种事件源（6-A / 6-B）→ 7 CM6 扩展工厂 → 8 Plugin 装配 → 9 设置面板 → 10 模块导出。
@@ -164,6 +168,8 @@ Two deliberate trade-offs:
 
 Requires Obsidian **1.4.0 or newer**.
 
+**Install from the community directory** (once published): Settings ▸ Community plugins ▸ Browse, search for **Line Drag Select**, install and enable.
+
 **Manual install** — copy the three files into
 
 ```
@@ -218,6 +224,7 @@ About selection bounds: dragging and line selections use a **strict line end** (
 ```
 obsidian-line-drag-select/
 ├── manifest.json        # Plugin metadata (id: line-drag-select, minAppVersion 1.4.0)
+├── versions.json        # Version → minAppVersion map (fallback installs on older Obsidian)
 ├── main.js              # ★ Hand-written CommonJS source, also the file Obsidian loads (~1100 lines)
 ├── styles.css           # Hide native gutter in own mode + highlight selected lines
 ├── LICENSE              # Full MIT license text (Copyright © 2026 airlulu)
@@ -228,10 +235,11 @@ obsidian-line-drag-select/
 │   ├── commands.test.js      # Keyboard commands (9 tests)
 │   ├── plugin-onload.test.js # Plugin wiring / settings tab / real CM6 extension smoke test (4 tests)
 │   └── stubs/obsidian.js     # Minimal obsidian stub for Node (CM6 is the real package)
-└── docs/
-    ├── prd/20261101_Obsidian行号区拖动多选插件-设计方案.md
-    ├── selection-lower-bound-and-gutter-highlight-design.md
-    └── gutter-highlight-block-widget-rows-design.md
+├── docs/
+│   ├── prd/20261101_Obsidian行号区拖动多选插件-设计方案.md
+│   ├── selection-lower-bound-and-gutter-highlight-design.md
+│   └── gutter-highlight-block-widget-rows-design.md
+└── .github/workflows/release.yml # tag → draft release (attestation + uploads main.js / manifest.json / styles.css)
 ```
 
 `main.js` is organized into sections numbered 1–10: 1 settings and defaults → 2 selection pure logic → 3 coordinates → line block (three fallbacks) → 4 gutter highlight → 5 drag state machine (plus 5-B keyboard commands) → 6 the two event sources (6-A / 6-B) → 7 CM6 extension factory → 8 plugin wiring → 9 settings tab → 10 module exports.
