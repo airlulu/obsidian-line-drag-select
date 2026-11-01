@@ -30,7 +30,7 @@ Module._resolveFilename = function patchedResolveFilename(request, ...rest) {
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { EditorState, EditorSelection, RangeSet } = require("@codemirror/state");
-const { gutterLineClass } = require("@codemirror/view");
+const { gutterLineClass, lineNumberWidgetMarker } = require("@codemirror/view");
 
 /** 被测插件模块：CommonJS require 即加载，但不会触发 Obsidian 的 onload。 */
 const pluginModule = require("../main.js");
@@ -48,8 +48,11 @@ const {
   sameBlock,
   rowSpan,
   gutterLineStarts,
+  blockCoveredByRanges,
   extendRowSpan,
   extendedDeleteEnd,
+  widgetSelectionMarker,
+  lineDragSelect,
 } = testApi;
 
 /** "aaa\nbbb\nccc\nddd" -> 每行 3 字符；positions: L1 0-3, L2 4-7, L3 8-11, L4 12-15 */
@@ -102,8 +105,11 @@ test("main.js 导出契约：两种 Obsidian 导出约定 + __test 纯函数面"
     "sameBlock",
     "rowSpan",
     "gutterLineStarts",
+    "blockCoveredByRanges",
     "extendRowSpan",
     "extendedDeleteEnd",
+    "widgetSelectionMarker",
+    "lineDragSelect",
   ]) {
     assert.equal(
       typeof testApi[name],
@@ -492,4 +498,98 @@ test("行号栏高亮：插件事务点亮每一行，其它来源改选区 / �
   }).state;
   s = s.update({ changes: { from: 0, insert: "x" } }).state;
   assert.deepEqual(markedStarts(s), [], "文档改动后高亮失效");
+});
+
+/* ------------------------------------------------------------------ *
+ * widget 行块（表格 / 嵌入块 / 折叠块）的高亮
+ *
+ * block widget 会把源码行整体替换掉，这些行没有文本行块；CM6 的 gutter 在遇到
+ * widget 行块时只问该 gutter 的 widgetMarker（原生行号列内部是
+ * lineNumberWidgetMarker facet），不会消费 gutterLineClass。所以“选中行都该亮”
+ * 必须再走一条 widget marker 路径，否则表格所在行在行号栏永远没有高亮。
+ * ------------------------------------------------------------------ */
+
+test("blockCoveredByRanges：widget 行块是否被整行选区整体覆盖", () => {
+  const single = { from: 8, to: 11 }; // 第3行（单行 widget）
+  const multi = { from: 4, to: 11 }; // 第2–3行（跨行 widget）
+  const withNewline = { from: 8, to: 12 }; // 第3行 + 行尾换行
+  const empty = { from: 8, to: 8 }; // 非法 / 空块
+
+  assert.equal(blockCoveredByRanges(state, [{ from: 8, to: 11 }], single), true, "只选中第3行 -> 覆盖单行 widget");
+  assert.equal(blockCoveredByRanges(state, [{ from: 0, to: 11 }], multi), true, "选中第1–3行 -> 覆盖第2–3行的 widget");
+  assert.equal(blockCoveredByRanges(state, [{ from: 4, to: 7 }], multi), false, "只选中第2行 -> 跨行 widget 不算覆盖（末行未选中）");
+  assert.equal(blockCoveredByRanges(state, [{ from: 0, to: 7 }], multi), false, "选中第1–2行 -> 跨行 widget 不算覆盖（末行未选中）");
+  assert.equal(blockCoveredByRanges(state, [{ from: 12, to: 15 }], single), false, "选中第4行 -> 不覆盖第3行 widget");
+  assert.equal(blockCoveredByRanges(state, [{ from: 8, to: 11 }], withNewline), true, "选中第3行 -> 覆盖含行尾换行的 widget");
+  assert.equal(blockCoveredByRanges(state, [{ from: 8, to: 8 }], single), false, "零宽选区不点亮 widget 行块");
+  assert.equal(blockCoveredByRanges(state, [], single), false, "没有整行选区时不点亮");
+  assert.equal(blockCoveredByRanges(state, [{ from: 8, to: 11 }], empty), false, "空块（from === to）不点亮");
+  assert.equal(
+    blockCoveredByRanges(state, [{ from: 0, to: 3 }, { from: 8, to: 11 }], single),
+    true,
+    "Ctrl/Cmd 多选区里只要有一段覆盖到 widget 行块就点亮"
+  );
+});
+
+test("widgetSelectionMarker：选中 widget 行块时给行号栏补高亮 marker（不带数字）", () => {
+  // 表格块：第3–4行被一个 block widget 整体替换（模拟 Obsidian Live Preview）
+  const settings = () => ({ gutterMode: "hook", includeEOL: false, autoScroll: true });
+  let s = EditorState.create({
+    doc: "aaa\nbbb\n| a | b |\n| --- | --- |",
+    extensions: [lineDragSelect(settings)],
+  });
+
+  const providers = s.facet(lineNumberWidgetMarker);
+  assert.equal(providers.length, 1, "插件必须把 widgetSelectionMarker 接进 lineNumberWidgetMarker（原生行号列）");
+  assert.equal(typeof providers[0], "function", "provider 应是 (view, widget, block) => marker 的函数");
+
+  const block = { from: s.doc.line(3).from, to: s.doc.line(4).to };
+  assert.equal(
+    widgetSelectionMarker({ state: s }, null, block),
+    null,
+    "没有整行选区时不给 widget 行块出元素（保持 Obsidian 原生外观、不多出空白元素）"
+  );
+
+  // 行号区选中表格块（第3–4行）：出 marker，class 与文本行高亮一致
+  s = s.update({
+    selection: EditorSelection.create([EditorSelection.range(block.from, block.to)]),
+    annotations: testApi.gutterSelection.of(true),
+  }).state;
+  const marker = widgetSelectionMarker({ state: s }, null, block);
+  assert.ok(marker, "选中 widget 行块时行号栏应有高亮 marker");
+  assert.equal(marker.elementClass, "cm-lds-selected", "marker class 必须与文本行高亮一致");
+  assert.equal(typeof marker.toDOM, "undefined", "widget 行块 marker 不带数字（不改变 Obsidian 原生行号显示）");
+
+  // 只选中表格前面的文字行：不点亮表格块
+  s = s.update({
+    selection: EditorSelection.create([EditorSelection.range(0, 7)]),
+    annotations: testApi.gutterSelection.of(true),
+  }).state;
+  assert.equal(
+    widgetSelectionMarker({ state: s }, null, block),
+    null,
+    "选区不包含 widget 行块时不点亮它"
+  );
+
+  // 内容区点击（非插件事务）清掉“整行选区”身份后，widget 高亮必须失效
+  s = s.update({ selection: EditorSelection.single(0) }).state;
+  assert.equal(
+    widgetSelectionMarker({ state: s }, null, block),
+    null,
+    "非插件事务改选区后 widget 行块高亮必须失效"
+  );
+});
+
+test("widget 行块高亮：own（自绘行号列）模式同样装配，且两种模式都注册原生列 provider", () => {
+  for (const mode of ["hook", "own"]) {
+    const s = EditorState.create({
+      doc: "aaa\nbbb\ncccc",
+      extensions: [lineDragSelect(() => ({ gutterMode: mode, includeEOL: false, autoScroll: true }))],
+    });
+    assert.equal(
+      s.facet(lineNumberWidgetMarker).length,
+      1,
+      `gutterMode="${mode}" 时应注册 lineNumberWidgetMarker provider`
+    );
+  }
 });

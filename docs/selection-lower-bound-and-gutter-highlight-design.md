@@ -4,7 +4,10 @@
 
 拖动行号区选行时，选区下界目前停在“末尾行行末 + 1”，也就是下一行的行首：CM6 会在选区 head 处画光标，用户于是看到下界落在末尾行下一行的行头；同时行号栏的高亮只点亮按下那一行（而且松手即消失），与“选中行都该亮”的直觉不符。本次把整行选区的终点改为**严格落在末尾行行末**（空行例外吞换行），并让行号栏高亮**由行号区产生的整行选区驱动**、覆盖每一行、松手后保留；为了不让“严格行尾”破坏整行删除，又接管了 Shift+方向键的按行扩展与 Backspace/Delete/剪切时的一个换行补偿。
 
-实现状态：已落地到 `main.js`（纯函数 + 高亮字段 + 三条键盘命令），`tests/selection.test.js`（纯函数 / 高亮状态）与 `tests/commands.test.js`（Shift 扩展、删除、剪切）覆盖上述规则，`npm test` 33 条用例全绿，`npm run typecheck` 通过。
+实现状态：已落地到 `main.js`（纯函数 + 高亮字段 + 三条键盘命令），`tests/selection.test.js`（纯函数 / 高亮状态）与 `tests/commands.test.js`（Shift 扩展、删除、剪切）覆盖上述规则，`npm test` 36 条用例全绿，`npm run typecheck` 通过。
+
+> 后续补丁（2026-11-01，36 条用例里新增 3 条）：表格 / 嵌入块 / 折叠块等 block widget 行块没有文本行块，`gutterLineClass` 的逐行 marker 落不到它们身上，行号栏会缺一段高亮；已用 `lineNumberWidgetMarker`（自绘模式用 gutter 的 `widgetMarker`）补齐，见
+> [gutter-highlight-block-widget-rows-design.md](gutter-highlight-block-widget-rows-design.md)。
 
 ## 术语
 

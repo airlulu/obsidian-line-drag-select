@@ -144,6 +144,7 @@ Module._resolveFilename = function patchedResolveFilename(request, ...rest) {
 
 const pluginModule = require("../main.js");
 const { EditorState } = require("@codemirror/state");
+const { lineNumberWidgetMarker } = require("@codemirror/view");
 
 const PluginClass = (pluginModule && pluginModule.default) || pluginModule;
 
@@ -261,6 +262,11 @@ test("build() 产出真实 CM6 扩展：hook / own 两种行号模式都能被 E
       state.facet(EditorState.allowMultipleSelections),
       true,
       `gutterMode="${mode}" 时插件扩展应开启 allowMultipleSelections（多选区）`
+    );
+    assert.equal(
+      state.facet(lineNumberWidgetMarker).length,
+      1,
+      `gutterMode="${mode}" 时插件扩展应注册 widget 行块的行号栏 marker（lineNumberWidgetMarker）`
     );
   }
 });

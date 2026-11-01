@@ -15,7 +15,7 @@
  *   1. 配置项与默认值
  *   2. 纯逻辑：行块 -> 选区（不碰 DOM，可单测）
  *   3. 坐标 -> 行块（三档降级）
- *   4. 行号栏高亮（选区来源标记 + gutterLineClass 逐行 point marker）
+ *   4. 行号栏高亮（选区来源标记 + gutterLineClass 逐行 point marker + widget 行块 marker）
  *   5. 拖拽状态机（全局单例）
  *   5-B. 整行选区的键盘命令（Shift 按行扩展 / 删除·剪切补偿）
  *   6-A / 6-B. 两种事件源：复用原生行号 / 自绘行号列
@@ -38,7 +38,14 @@ const {
   RangeSet,
   StateField,
 } = require("@codemirror/state");
-const { GutterMarker, ViewPlugin, gutter, gutterLineClass, keymap } = require("@codemirror/view");
+const {
+  GutterMarker,
+  ViewPlugin,
+  gutter,
+  gutterLineClass,
+  keymap,
+  lineNumberWidgetMarker,
+} = require("@codemirror/view");
 
 /* ------------------------------------------------------------------ *
  * 1. 配置项与默认值
@@ -262,6 +269,29 @@ function gutterLineStarts(state, ranges) {
 }
 
 /**
+ * 块级 widget（表格 / 嵌入块 / 折叠块……）是否被整行选区整体覆盖。
+ *
+ * 行号栏高亮对文本行用 gutterLineClass 逐行 point marker；但被 block widget 整体替换
+ * 掉的行没有文本行块（CM6 的 gutter 只在 BlockType.Text 行块上消费 gutterLineClass），
+ * 这些“视觉行”必须按块判断，改由 gutter 的 widgetMarker 出元素（见 widgetSelectionMarker）。
+ *
+ * 只认完全覆盖：行号区产生的选区永远按整行对齐，所以一个 widget 行块要么整块被选中，
+ * 要么完全没选中，不存在“选中半个表格块”的情况。
+ *
+ * @param {import("@codemirror/state").EditorState} state
+ * @param {readonly LineBlock[]} ranges
+ * @param {LineBlock} block
+ * @returns {boolean}
+ */
+function blockCoveredByRanges(state, ranges, block) {
+  if (!block || block.to <= block.from) return false;
+  const first = state.doc.lineAt(block.from).from;
+  // block.to 可能落在新行行首（替换范围吞掉行尾换行），减一后仍能落回真正覆盖的末行
+  const last = state.doc.lineAt(block.to - 1).from;
+  return ranges.some((range) => range.from <= first && range.to > last);
+}
+
+/**
  * 按行扩展 / 收缩后的行号区间（纯函数，便于单测）。
  * 收缩到只剩锚点那一行就停住，不把选区收成光标；到文档首尾会被钳制。
  *
@@ -397,6 +427,38 @@ const lineSelectionGutterClass = gutterLineClass.compute([lineSelectionField], (
     true
   );
 });
+
+/**
+ * 被整行选区覆盖的块级 widget 在行号栏补一个“空白高亮元素”。
+ *
+ * 为什么需要单独一条路径：表格、嵌入块、折叠块在 Live Preview 里是 block widget，
+ * 会把源码行整体替换掉——这些行没有文本行块，而 CM6 的 gutter 在遇到 widget 行块时
+ * 只问该 gutter 的 widgetMarker，不会消费 gutterLineClass。于是“选中行都该亮”的规则
+ * 在表格这类行上必然失效，行号栏会缺一段高亮。
+ *
+ * 这里给 widget 行块返回一个不带数字的 marker：元素高度自动等于整个 widget 的高度，
+ * 选中的就是一段与文本行同色的高亮；未选中时返回 null，不改变 Obsidian 原本
+ * “widget 旁边不显示行号”的外观，也不会多出空白元素。
+ *
+ * @param {import("@codemirror/view").EditorView} view
+ * @param {unknown} _widget
+ * @param {LineBlock} block
+ * @returns {GutterMarker | null}
+ */
+function widgetSelectionMarker(view, _widget, block) {
+  const value = view.state.field(lineSelectionField, false);
+  if (!value || !block) return null;
+  return blockCoveredByRanges(view.state, value.ranges, block) ? new SelectedLineMarker() : null;
+}
+
+/**
+ * 原生行号列（Obsidian 自带的 lineNumbers）内部通过 lineNumberWidgetMarker facet
+ * 收集 widget 行块的 marker；把上面的 widgetSelectionMarker 接进这条管道即可。
+ * 老版本 CM6 没有这个 facet 时优雅降级：只失去 widget 行块高亮，其它功能不受影响。
+ */
+const lineSelectionWidgetMarker = lineNumberWidgetMarker
+  ? lineNumberWidgetMarker.of(widgetSelectionMarker)
+  : [];
 
 /* ------------------------------------------------------------------ *
  * 5. 拖拽状态机（全局单例：同一时刻只可能有一个编辑器在拖）
@@ -783,6 +845,9 @@ function ownLineNumbers(getSettings) {
     lineMarker(view, line) {
       return new NumberMarker(String(view.state.doc.lineAt(line.from).number));
     },
+    // 自绘行号列不是 CM6 内置的 lineNumbers，lineNumberWidgetMarker facet 管不到它，
+    // 所以把同一个 widget marker 函数直接配给本 gutter（语义与原生行号列一致）。
+    widgetMarker: widgetSelectionMarker,
     initialSpacer(view) {
       return new NumberMarker(String(view.state.doc.lines));
     },
@@ -814,6 +879,9 @@ function lineDragSelect(getSettings) {
     EditorState.allowMultipleSelections.of(true),
     lineSelectionField,
     lineSelectionGutterClass,
+    // 表格 / 嵌入块 / 折叠块这类被 block widget 替换的“视觉行”没有文本行块，
+    // gutterLineClass 落不到它们身上，靠 widget marker 在行号栏补一段同色高亮。
+    lineSelectionWidgetMarker,
     // 整行选区的键盘语义：Shift 按行扩展、删除 / 剪切补一个换行。
     // 只在“行号区产生的整行选区”上生效，其它情况 run 返回 false 交回原生按键。
     Prec.highest(
@@ -1010,12 +1078,17 @@ module.exports.__test = {
   sameBlock,
   rowSpan,
   gutterLineStarts,
+  blockCoveredByRanges,
   extendRowSpan,
   extendedDeleteEnd,
   // 高亮状态（供单测直接构造 / 断言插件事务的来源标记）
   gutterSelection,
   lineSelectionField,
   lineSelectionGutterClass,
+  // widget 行块（表格 / 嵌入块 / 折叠块）的高亮 marker，以及完整扩展工厂（集成测试用）
+  lineSelectionWidgetMarker,
+  widgetSelectionMarker,
+  lineDragSelect,
   // 键盘命令（供单测用最小假 view 驱动）
   pageRowStep,
   extendLineSelection,
